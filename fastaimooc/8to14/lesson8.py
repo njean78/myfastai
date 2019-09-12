@@ -1,87 +1,151 @@
-from fastai import *
-from fastai.text import *
+import pickle
+import gzip
 
-import pandas as pd
-
-path = untar_data(URLs.IMDB_SAMPLE)
-path.ls()
-# texts.csv, models, tmp
-df = pd.read_csv(path / "texts.csv")
-
-data_lm = TextDataBunch.from_csv(path, "texts.csv")
-data_lm.save()  # preprocessing ... and saving in path
-
-data = TextDataBunch.load(path)
-data.show_batch()
-
-data.vocab.itos[:10]  # default 60000 words
-data.train_ds[0][0]
-data.train_ds[0][0].data[:10]
+from fastai import datasets
+from torch import tensor
+from torch.nn import init
+import torch
 
 
-## or ... data block API
-data = (
-    TextList.from_csv(path, "texts.csv", col="text")
-    .split_from_df(cols=2)  # validation flag
-    .label_from_df(cols=0)  # labels
-    .databunch()
-)
+def load_data():
+    MNIST_URL = "http://deeplearning.net/data/mnist/mnist.pkl"
+    path = datasets.download_data(MNIST_URL, ext=".gz")
 
-data_lm = (
-    TextList.from_folder(path)
-    .filter_by_folder(include=["train", "test"])
-    .random_split_by_pct(0.1)
-    .label_for_lm()
-    .databunch()
-)
+    with gzip.open(path, "rb") as f:
+        ((x_train, y_train), (x_valid, y_valid), (x_test, y_test)) = pickle.load(
+            f, encoding="latin-1"
+        )
+    ## tensorify
+    (x_train, y_train, x_valid, y_valid) = map(
+        tensor, (x_train, y_train, x_valid, y_valid)
+    )
 
-data_lm.save("tmp_lm")
+    n, c = x_train.shape
 
-learn = language_model_learner(data_lm, pretrained_model=URLs.WT103, drop_mult=0.3)
-learn.lr_find()
+    ##
+    img = x_train[0]
+    img.view(28, 28).type()
+    # plt.imshow(img.view(28,28))
+    return (x_train, y_train, x_valid, y_valid)
 
-learn.recorder.plot(skip_end=15)
-learn.fit_one_cycle(1, 1e-2, moms=(0.8, 0.7))
 
-learn.save("lm-head.model")
-learn.load("lm-head.model")
+def matmul(a, b):
+    ar, ac = a.shape
+    br, bc = b.shape
+    assert ac == br
+    c = torch.zeros(ar, bc)
+    for i in range(ar):
+        for j in range(bc):
+            for k in range(ac):
+                c[i, j] += a[i, k] * b[k, j]
+    return c
 
-learn.unfreeze()
-learn.fit_one_cycle(10, 1e-3, moms=(0.8, 0.7))
 
-## legal lm -> auc should be 50%
+def matmul2(a, b):
+    ar, ac = a.shape
+    br, bc = b.shape
+    assert ac == br
+    c = torch.zeros(ar, bc)
+    for i in range(ar):
+        for j in range(bc):
+            c[i, j] = (a[i, :] * b[:, j]).sum()
+    return c
 
-learn.predict("I liked this movie because ", 100, temperature=1.1, min_p=0.001)
 
-learn.save("fine-tuned.lm")
-learn.save_encoder(
-    "fine-tuned.encoder"
-)  # the part that understand the sentence, without the next word generator
-## classifier
-data_clas = (
-    TextFilesList.from_folder(path, vocab=data_lm.vocab)
-    .split_by_folder(valid="test")
-    .label_from_folder(classe=["neg", "pos"])
-    .databunch(bs=50)
-)
-data_clas.save("tmp_clas")
-# data_clas = TextCkasDataBunch.load(path, 'tmp_clas', bs = 50)
-data_clas.show_batch()
+# c.unsqueeze(0) ~ c[None, :] - c[None, ...]
+# c.unsqueeze(1) ~ c[:, None]
+def matmul3_broadcasting(a, b):
+    ar, ac = a.shape
+    br, bc = b.shape
+    assert ac == br
+    c = torch.zeros(ar, bc)
+    for i in range(ar):
+        c[i, :] = (a[i, None] * b).sum(dim=0)
+    return c
 
-learn = text_classifier_learner(data_clas, drop_mult=0.5)
-learn.load_encodr("fine_tuned_enc")
-learn.freeze()
 
-learn.lr_find()
-learn.recorder.plot()
-learn.fit_one_cycle(1,2e-2,moms = (0.8,0.7)) # -> .92
+def matmul4_ein(a, b):
+    return torch.einsum("ik,kj->ij", a, b)
 
-learn.save('first')
-learn.unfreeze(-2)
-learn.fit_one_cycle(1, slice(1e-2/(2.6**4),1e-2),moms = (0.8,0.7))
+def matmul5(a, b):
+    return a.matmul(b) # a@b
 
-learn.unfreeze(-3)
-learn.fit_one_cycle(1, slice(5e-3/(2.6**4),5e-3),moms = (0.8,0.7))
+######################
+def normalize(x,m,s):
+    return (x-m)/s
 
-learn.unfreeze()
-learn.fit_one_cycle(2, slice(1e-3/(2.6**4),1e-3),moms = (0.8,0.7))
+def lin(x,w,b):
+    return x@w +b
+
+def relu(x):
+    return x.clamp_min(0.)
+
+def model(xb, w1, b1, w2, b2):
+    l1 = lin(xb, w1, b1)
+    l2 = relu(l1)
+    l3 = lin(l2, w2, b2)
+    return l3
+
+def mse(output, target):
+    return (output.squeeze(1) - target).pow(2).mean()
+
+def mse_grad(inp, target):
+    inp.g = 2. * (inp.squeeze(1) - target).unsqueeze(-1)/inp.shape[0]
+
+def relu_grad(inp, target):
+    inp.g = (inp>0).float() * target.g
+
+def lin_grad(inp, target, w,b):
+    inp.g = target.g @ w.t()
+    w.g = (inp.unsqueeze(-1) * target.unsqueeze(1)).sum(0)
+    b.g = target.g.sum(0)
+
+## forward_and_backward(x_train, y_train, ...)
+def forward_and_backward(inp, target, w1, b1, w2, b2):
+    l1 = inp @ w1 + b1
+    l2 = relu(l1)
+    out = l2 @ w2 + b2
+    loss = mse(out, target)
+
+    mse_grad(out, target)
+    lin_grad(l2, out, w2, b2)
+    relu_grad(l1, l2)
+    lin_grad(inp, l1, w1, b1)
+
+
+def linear_model(data, nh = 50):
+    (x_train, y_train, x_valid, y_valid) = data
+    # weights = torch.randn(784, 10)
+    # bias = torch.zeros(10)
+
+    train_mean, train_std = x_train.mean(), x_train.std()
+
+    x_train = normalize(x_train, train_mean, train_std)
+    x_valid = normalize(x_valid, train_mean, train_std)
+
+    nrows, ncols = x_train.shape
+    nclasses = y_train.max() +1
+    
+    ## kaiming initialization
+    #w1 = torch.randn(ncols, nh) / math.sqrt(2/ncols)
+    w1 = torch.zeros(ncols, nh)
+    w1 = init(w1, mode = 'fan_out')
+
+    b1 = torch.zeros(nh)
+
+    w2 = torch.randn(nh,1) / math.sqrt(nh)
+    b2 = torch.zeros(1)
+
+    # forward
+    output = model(x_valid, w1, b1, w2, b2)
+    res = mse(output, y_valid.float())
+
+    
+
+    y = bias + matmul(weights, data)
+
+
+## class Relu -> __call__ and backward methods 
+
+if __name__ == "__main__":
+    load_data()
