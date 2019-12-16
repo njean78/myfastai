@@ -30,6 +30,7 @@ mlflow = "*"
 torch = "*"
 jupyter = "*"
 gym = "*"
+gym-bandits = {git = "https://github.com/JKCooper2/gym-bandits"}
 
 [requires]
 python_version = "3.7"
