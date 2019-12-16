@@ -28,6 +28,8 @@ catboost = "*"
 category-encoders = "*"
 mlflow = "*"
 torch = "*"
+jupyter = "*"
+gym = "*"
 
 [requires]
 python_version = "3.7"
