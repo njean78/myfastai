@@ -18,7 +18,8 @@ lightgbm = "*"
 kaggle = "*"
 pymatgen = "*"
 fastai = "*"
-tensorflow-gpu = "==1.14"
+#tensorflow-gpu = "==1.14"
+tensorflow = "*"
 tornado = "*"
 keras = "*"
 tensorboard = "*"
@@ -26,9 +27,10 @@ tables = "*"
 catboost = "*"
 category-encoders = "*"
 mlflow = "*"
+torch = "*"
 
 [requires]
-python_version = "3.6"
+python_version = "3.7"
 
 [pipenv]
 allow_prereleases = true
